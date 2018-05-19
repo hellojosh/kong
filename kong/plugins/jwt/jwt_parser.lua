@@ -7,33 +7,69 @@
 
 local json = require "cjson"
 local utils = require "kong.tools.utils"
-local crypto = require "crypto"
+local openssl_digest = require "openssl.digest"
+local openssl_hmac = require "openssl.hmac"
+local openssl_pkey = require "openssl.pkey"
+local asn_sequence = require "kong.plugins.jwt.asn_sequence"
 
 local error = error
 local type = type
 local pcall = pcall
 local ngx_time = ngx.time
 local string_rep = string.rep
+local string_sub = string.sub
+local table_concat = table.concat
 local setmetatable = setmetatable
 local encode_base64 = ngx.encode_base64
 local decode_base64 = ngx.decode_base64
 
 --- Supported algorithms for signing tokens.
 local alg_sign = {
-  ["HS256"] = function(data, key) return crypto.hmac.digest("sha256", data, key, true) end,
-  --["HS384"] = function(data, key) return crypto.hmac.digest("sha384", data, key, true) end,
-  --["HS512"] = function(data, key) return crypto.hmac.digest("sha512", data, key, true) end
-  ["RS256"] = function(data, key) return crypto.sign('sha256', data, crypto.pkey.from_pem(key, true)) end
+  ["HS256"] = function(data, key) return openssl_hmac.new(key, "sha256"):final(data) end,
+  --["HS384"] = function(data, key) return openssl_hmac.new(key, "sha384"):final(data) end,
+  --["HS512"] = function(data, key) return openssl_hmac.new(key, "sha512"):final(data) end,
+  ["RS256"] = function(data, key) return openssl_pkey.new(key):sign(openssl_digest.new("sha256"):update(data)) end,
+  ["RS512"] = function(data, key) return openssl_pkey.new(key):sign(openssl_digest.new("sha512"):update(data)) end,
+  ["ES256"] = function(data, key)
+    local pkeyPrivate = openssl_pkey.new(key)
+    local signature = pkeyPrivate:sign(openssl_digest.new("sha256"):update(data))
+
+    local derSequence = asn_sequence.parse_simple_sequence(signature)
+    local r = asn_sequence.unsign_integer(derSequence[1], 32)
+    local s = asn_sequence.unsign_integer(derSequence[2], 32)
+    assert(#r == 32)
+    assert(#s == 32)
+    return r .. s
+  end
 }
 
 --- Supported algorithms for verifying tokens.
 local alg_verify = {
   ["HS256"] = function(data, signature, key) return signature == alg_sign["HS256"](data, key) end,
   --["HS384"] = function(data, signature, key) return signature == alg_sign["HS384"](data, key) end,
-  --["HS512"] = function(data, signature, key) return signature == alg_sign["HS512"](data, key) end
+  --["HS512"] = function(data, signature, key) return signature == alg_sign["HS512"](data, key) end,
   ["RS256"] = function(data, signature, key)
-    local pkey = assert(crypto.pkey.from_pem(key),"Consumer Public Key is Invalid")
-    return crypto.verify('sha256', data, signature, pkey)
+    local pkey_ok, pkey = pcall(openssl_pkey.new, key)
+    assert(pkey_ok, "Consumer Public Key is Invalid")
+    local digest = openssl_digest.new('sha256'):update(data)
+    return pkey:verify(signature, digest)
+  end,
+  ["RS512"] = function(data, signature, key)
+    local pkey_ok, pkey = pcall(openssl_pkey.new, key)
+    assert(pkey_ok, "Consumer Public Key is Invalid")
+    local digest = openssl_digest.new('sha512'):update(data)
+    return pkey:verify(signature, digest)
+  end,
+  ["ES256"] = function(data, signature, key)
+    local pkey_ok, pkey = pcall(openssl_pkey.new, key)
+    assert(pkey_ok, "Consumer Public Key is Invalid")
+    assert(#signature == 64, "Signature must be 64 bytes.")
+    local asn = {}
+    asn[1] = asn_sequence.resign_integer(string_sub(signature, 1, 32))
+    asn[2] = asn_sequence.resign_integer(string_sub(signature, 33, 64))
+    local signatureAsn = asn_sequence.create_simple_sequence(asn)
+    local digest = openssl_digest.new('sha256'):update(data)
+    return pkey:verify(signatureAsn, digest)
   end
 }
 
@@ -50,11 +86,11 @@ end
 -- @param input String to base64 decode
 -- @return Base64 decoded string
 local function b64_decode(input)
-  local reminder = #input % 4
+  local remainder = #input % 4
 
-  if reminder > 0 then
-    local padlen = 4 - reminder
-    input = input..string_rep('=', padlen)
+  if remainder > 0 then
+    local padlen = 4 - remainder
+    input = input .. string_rep('=', padlen)
   end
 
   input = input:gsub("-", "+"):gsub("_", "/")
@@ -130,9 +166,15 @@ end
 
 -- For test purposes
 local function encode_token(data, key, alg, header)
-  if type(data) ~= "table" then error("Argument #1 must be table", 2) end
-  if type(key) ~= "string" then error("Argument #2 must be string", 2) end
-  if header and type(header) ~= "table" then error("Argument #4 must be a table", 2) end
+  if type(data) ~= "table" then
+    error("Argument #1 must be table", 2)
+  end
+  if type(key) ~= "string" then
+    error("Argument #2 must be string", 2)
+  end
+  if header and type(header) ~= "table" then
+    error("Argument #4 must be a table", 2)
+  end
 
   alg = alg or "HS256"
 
@@ -146,10 +188,10 @@ local function encode_token(data, key, alg, header)
     b64_encode(json.encode(data))
   }
 
-  local signing_input = table.concat(segments, ".")
+  local signing_input = table_concat(segments, ".")
   local signature = alg_sign[alg](signing_input, key)
   segments[#segments+1] = b64_encode(signature)
-  return table.concat(segments, ".")
+  return table_concat(segments, ".")
 end
 
 --[[
@@ -168,7 +210,9 @@ _M.__index = _M
 -- @return JWT parser
 -- @return error if any
 function _M:new(token)
-  if type(token) ~= "string" then error("Token must be a string, got "..tostring(token), 2) end
+  if type(token) ~= "string" then
+    error("Token must be a string, got " .. tostring(token), 2)
+  end
 
   local token, err = decode_token(token)
   if err then
@@ -183,7 +227,7 @@ end
 -- @param key Key against which to verify the signature
 -- @return A boolean indicating if the signature if verified or not
 function _M:verify_signature(key)
-  return alg_verify[self.header.alg](self.header_64.."."..self.claims_64, self.signature, key)
+  return alg_verify[self.header.alg](self.header_64 .. "." .. self.claims_64, self.signature, key)
 end
 
 function _M:b64_decode(input)
@@ -216,7 +260,9 @@ local registered_claims = {
 -- @return A boolean indicating true if no errors zere found
 -- @return A list of errors
 function _M:verify_registered_claims(claims_to_verify)
-  if not claims_to_verify then claims_to_verify = {} end
+  if not claims_to_verify then
+    claims_to_verify = {}
+  end
   local errors = nil
   local claim, claim_rules
 
@@ -224,7 +270,7 @@ function _M:verify_registered_claims(claims_to_verify)
     claim = self.claims[claim_name]
     claim_rules = registered_claims[claim_name]
     if type(claim) ~= claim_rules.type then
-      errors = utils.add_error(errors, claim_name, "must be a "..claim_rules.type)
+      errors = utils.add_error(errors, claim_name, "must be a " .. claim_rules.type)
     else
       local check_err = claim_rules.check(claim)
       if check_err then

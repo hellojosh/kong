@@ -7,10 +7,13 @@ local udp = ngx.socket.udp
 
 local UdpLogHandler = BasePlugin:extend()
 
-UdpLogHandler.PRIORITY = 1
+UdpLogHandler.PRIORITY = 8
+UdpLogHandler.VERSION = "0.1.0"
 
 local function log(premature, conf, str)
-  if premature then return end
+  if premature then
+    return
+  end
 
   local sock = udp()
   sock:settimeout(conf.timeout)

@@ -1,5 +1,6 @@
-local crud = require "kong.api.crud_helpers"
-local reports = require "kong.core.reports"
+local crud    = require "kong.api.crud_helpers"
+local utils   = require "kong.tools.utils"
+local reports = require "kong.reports"
 
 return {
   ["/apis/"] = {
@@ -16,7 +17,7 @@ return {
     end
   },
 
-  ["/apis/:name_or_id"] = {
+  ["/apis/:api_name_or_id"] = {
     before = function(self, dao_factory, helpers)
       crud.find_api_by_name_or_id(self, dao_factory, helpers)
     end,
@@ -34,7 +35,7 @@ return {
     end
   },
 
-  ["/apis/:name_or_id/plugins/"] = {
+  ["/apis/:api_name_or_id/plugins/"] = {
     before = function(self, dao_factory, helpers)
       crud.find_api_by_name_or_id(self, dao_factory, helpers)
       self.params.api_id = self.api.id
@@ -46,8 +47,10 @@ return {
 
     POST = function(self, dao_factory)
       crud.post(self.params, dao_factory.plugins, function(data)
-        data.signal = reports.api_signal
-        reports.send(data)
+        local r_data = utils.deep_copy(data)
+        r_data.config = nil
+        r_data.e = "a"
+        reports.send("api", r_data)
       end)
     end,
 
@@ -56,20 +59,13 @@ return {
     end
   },
 
-  ["/apis/:name_or_id/plugins/:id"] = {
+  ["/apis/:api_name_or_id/plugins/:id"] = {
     before = function(self, dao_factory, helpers)
       crud.find_api_by_name_or_id(self, dao_factory, helpers)
-      local rows, err = dao_factory.plugins:find_all {
-        id = self.params.id,
-        api_id = self.api.id
-      }
-      if err then
-        return helpers.yield_error(err)
-      elseif #rows == 0 then
-        return helpers.responses.send_HTTP_NOT_FOUND()
-      end
-
-      self.plugin = rows[1]
+      crud.find_plugin_by_filter(self, dao_factory, {
+        api_id = self.api.id,
+        id     = self.params.id,
+      }, helpers)
     end,
 
     GET = function(self, dao_factory, helpers)

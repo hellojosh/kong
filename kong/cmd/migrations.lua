@@ -17,7 +17,7 @@ local ANSWERS = {
 local function confirm(q)
   local max = 3
   while max > 0 do
-    io.write("> "..q.." [Y/n] ")
+    io.write("> " .. q .. " [Y/n] ")
     local a = io.read("*l")
     if ANSWERS[a] ~= nil then
       return ANSWERS[a]
@@ -28,7 +28,7 @@ end
 
 local function execute(args)
   local conf = assert(conf_loader(args.conf))
-  local dao = DAOFactory(conf, conf.plugins)
+  local dao = assert(DAOFactory.new(conf))
 
   if args.command == "up" then
     assert(dao:run_migrations())
@@ -46,7 +46,9 @@ local function execute(args)
           db_infos.desc, db_infos.name)
     end
   elseif args.command == "reset" then
-    if confirm("Are you sure? This operation is irreversible.") then
+    if args.yes
+      or confirm("Are you sure? This operation is irreversible.")
+    then
       dao:drop_schema()
       log("Schema successfully reset")
     else
@@ -66,7 +68,8 @@ The available commands are:
  reset  Reset the configured database (irreversible).
 
 Options:
- -c,--conf (optional string) configuration file
+ -c,--conf        (optional string) configuration file
+ -y,--yes         assume "yes" to prompts and run non-interactively
 ]]
 
 return {

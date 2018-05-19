@@ -22,25 +22,31 @@ local function get_identifier(conf)
     identifier = ngx.ctx.authenticated_credential and ngx.ctx.authenticated_credential.id
   end
 
-  if not identifier then identifier = ngx.var.remote_addr end
+  if not identifier then
+    identifier = ngx.var.remote_addr
+  end
 
   return identifier
 end
 
-local function get_usage(conf, api_id, identifier, current_timestamp, limits)
+local function get_usage(conf, identifier, current_timestamp, limits)
   local usage = {}
 
   for k, v in pairs(limits) do -- Iterate over limit names
     for lk, lv in pairs(v) do -- Iterare over periods
-      local current_usage, err = policies[conf.policy].usage(conf, api_id, identifier, current_timestamp, lk, k)
+      local current_usage, err = policies[conf.policy].usage(conf, identifier, current_timestamp, lk, k)
       if err then
         return nil, err
       end
 
       local remaining = lv - current_usage
 
-      if not usage[k] then usage[k] = {} end
-      if not usage[k][lk] then usage[k][lk] = {} end
+      if not usage[k] then
+        usage[k] = {}
+      end
+      if not usage[k][lk] then
+        usage[k][lk] = {}
+      end
 
       usage[k][lk].limit = lv
       usage[k][lk].remaining = remaining
@@ -58,12 +64,11 @@ function _M.execute(conf)
   -- Load info
   local current_timestamp = timestamp.get_utc()
   ngx.ctx.current_timestamp = current_timestamp -- For later use
-  local api_id = ngx.ctx.api.id
   local identifier = get_identifier(conf)
   ngx.ctx.identifier = identifier -- For later use
 
   -- Load current metric for configured period
-  local usage, err = get_usage(conf, api_id, identifier, current_timestamp, conf.limits)
+  local usage, err = get_usage(conf, identifier, current_timestamp, conf.limits)
   if err then
     if conf.fault_tolerant then
       ngx.log(ngx.ERR, "failed to get usage: ", tostring(err))
@@ -78,7 +83,7 @@ function _M.execute(conf)
     local remaining
     for lk, lv in pairs(usage[k]) do
       if conf.block_on_first_violation and lv.remaining == 0 then
-        return responses.send(429, "API rate limit exceeded for '"..k.."'")
+        return responses.send(429, "API rate limit exceeded for '" .. k .. "'")
       end
 
       if not remaining or lv.remaining < remaining then
@@ -86,7 +91,7 @@ function _M.execute(conf)
       end
     end
 
-    ngx.req.set_header(RATELIMIT_REMAINING.."-"..k, remaining)
+    ngx.req.set_header(RATELIMIT_REMAINING .. "-" .. k, remaining)
   end
 
   ngx.ctx.usage = usage -- For later use

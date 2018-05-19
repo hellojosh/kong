@@ -1,9 +1,8 @@
-local dnsmasq_signals = require "kong.cmd.utils.dnsmasq_signals"
 local prefix_handler = require "kong.cmd.utils.prefix_handler"
 local nginx_signals = require "kong.cmd.utils.nginx_signals"
-local serf_signals = require "kong.cmd.utils.serf_signals"
 local conf_loader = require "kong.conf_loader"
 local DAOFactory = require "kong.dao.factory"
+local kill = require "kong.cmd.utils.kill"
 local log = require "kong.cmd.utils.log"
 
 local function execute(args)
@@ -11,29 +10,61 @@ local function execute(args)
     prefix = args.prefix
   }))
 
-  local dao = DAOFactory(conf)
+  assert(not kill.is_running(conf.nginx_pid),
+         "Kong is already running in " .. conf.prefix)
+
+  local dao = assert(DAOFactory.new(conf))
+  local ok, err_t = dao:init()
+  if not ok then
+    error(tostring(err_t))
+  end
+
   local err
+
   xpcall(function()
     assert(prefix_handler.prepare_prefix(conf, args.nginx_conf))
-    assert(dao:run_migrations())
-    if conf.dnsmasq then
-      assert(dnsmasq_signals.start(conf))
+
+    if args.run_migrations then
+      assert(dao:run_migrations())
     end
-    assert(serf_signals.start(conf, dao))
+
+    local ok, err = dao:are_migrations_uptodate()
+    if err then
+      -- error correctly formatted by the DAO
+      error(err)
+    end
+
+    if not ok then
+      -- we cannot start, throw a very descriptive error to instruct the user
+      error("the current database schema does not match\n"                  ..
+            "this version of Kong.\n\nPlease run `kong migrations up` "     ..
+            "first to update/initialise the database schema.\nBe aware "    ..
+            "that Kong migrations should only run from a single node, and " ..
+            "that nodes\nrunning migrations concurrently will conflict "    ..
+            "with each other and might corrupt\nyour database schema!")
+    end
+
+    ok, err = dao:check_schema_consensus()
+    if err then
+      -- error correctly formatted by the DAO
+      error(err)
+    end
+
+    if not ok then
+      error("Cassandra has not reached cluster consensus yet")
+    end
+
     assert(nginx_signals.start(conf))
+
     log("Kong started")
   end, function(e)
-    log.verbose("could not start Kong, stopping services")
-    pcall(nginx_signals.stop(conf))
-    pcall(serf_signals.stop(conf, dao))
-    if conf.dnsmasq then
-      pcall(dnsmasq_signals.stop(conf))
-    end
     err = e -- cannot throw from this function
-    log.verbose("stopped services")
   end)
 
   if err then
+    log.verbose("could not start Kong, stopping services")
+    pcall(nginx_signals.stop(conf))
+    log.verbose("stopped services")
     error(err) -- report to main error handler
   end
 end
@@ -45,9 +76,10 @@ Start Kong (Nginx and other configured services) in the configured
 prefix directory.
 
 Options:
- -c,--conf    (optional string) configuration file
- -p,--prefix  (optional string) override prefix directory
- --nginx-conf (optional string) custom Nginx configuration template
+ -c,--conf        (optional string)   configuration file
+ -p,--prefix      (optional string)   override prefix directory
+ --nginx-conf     (optional string)   custom Nginx configuration template
+ --run-migrations (optional boolean)  optionally run migrations on the DB
 ]]
 
 return {

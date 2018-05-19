@@ -1,33 +1,34 @@
-DEV_ROCKS = busted luacheck lua-llthreads2
+OS := $(shell uname)
+
+DEV_ROCKS = "busted 2.0.rc12" "luacheck 0.20.0" "lua-llthreads2 0.1.4"
 BUSTED_ARGS ?= -v
 TEST_CMD ?= bin/busted $(BUSTED_ARGS)
+
+ifeq ($(OS), Darwin)
 OPENSSL_DIR ?= /usr/local/opt/openssl
+else
+OPENSSL_DIR ?= /usr
+endif
 
 .PHONY: install dev lint test test-integration test-plugins test-all
 
 install:
-	@luarocks make OPENSSL_DIR=$(OPENSSL_DIR)
+	@luarocks make OPENSSL_DIR=$(OPENSSL_DIR) CRYPTO_DIR=$(OPENSSL_DIR)
 
-dev: install
+dev:
+	-@luarocks remove kong
+	@luarocks make OPENSSL_DIR=$(OPENSSL_DIR) CRYPTO_DIR=$(OPENSSL_DIR)
 	@for rock in $(DEV_ROCKS) ; do \
-		if ! luarocks list | grep $$rock > /dev/null ; then \
-      echo $$rock not found, installing via luarocks... ; \
-      luarocks install $$rock ; \
-    else \
-      echo $$rock already installed, skipping ; \
-    fi \
+	  if luarocks list --porcelain $$rock | grep -q "installed" ; then \
+	    echo $$rock already installed, skipping ; \
+	  else \
+	    echo $$rock not found, installing via luarocks... ; \
+	    luarocks install $$rock ; \
+	  fi \
 	done;
 
 lint:
-	@luacheck -q . \
-						--exclude-files 'kong/vendor/**/*.lua' \
-						--exclude-files 'spec/fixtures/invalid-module.lua' \
-						--std 'ngx_lua+busted' \
-						--globals '_KONG' \
-						--globals 'ngx' \
-						--globals 'assert' \
-						--no-redefined \
-						--no-unused-args
+	@luacheck -q .
 
 test:
 	@$(TEST_CMD) spec/01-unit
@@ -40,3 +41,15 @@ test-plugins:
 
 test-all:
 	@$(TEST_CMD) spec/
+
+old-test:
+	@$(TEST_CMD) spec-old-api/01-unit
+
+old-test-integration:
+	@$(TEST_CMD) spec-old-api/02-integration
+
+old-test-plugins:
+	@$(TEST_CMD) spec-old-api/03-plugins
+
+old-test-all:
+	@$(TEST_CMD) spec-old-api/

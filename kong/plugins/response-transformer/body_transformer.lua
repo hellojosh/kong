@@ -23,14 +23,14 @@ end
 
 local function append_value(current_value, value)
   local current_value_type = type(current_value)
- 
+
   if current_value_type  == "string" then
     return {current_value, value}
   elseif current_value_type  == "table" then
     table_insert(current_value, value)
-    return current_value  
+    return current_value
   else
-    return {value} 
+    return {value}
   end
 end
 
@@ -43,9 +43,11 @@ local function iter(config_array)
     end
 
     local current_name, current_value = match(current_pair, "^([^:]+):*(.-)$")
-    if current_value == "" then current_value = nil end
- 
-    return i, current_name, current_value  
+    if current_value == "" then
+      current_value = nil
+    end
+
+    return i, current_name, current_value
   end, config_array, 0
 end
 
@@ -55,17 +57,19 @@ end
 
 function _M.transform_json_body(conf, buffered_data)
   local json_body = read_json_body(buffered_data)
-  if json_body == nil then return end
-  
+  if json_body == nil then
+    return
+  end
+
   -- remove key:value to body
   for _, name in iter(conf.remove.json) do
     json_body[name] = nil
   end
-  
+
   -- replace key:value to body
   for _, name, value in iter(conf.replace.json) do
     local v = cjson_encode(value)
-    if (sub(v, 1, 1) == [["]]) and (sub(v, -1, -1) == [["]]) then
+    if sub(v, 1, 1) == [["]] and sub(v, -1, -1) == [["]] then
       v = gsub(sub(v, 2, -2), [[\"]], [["]]) -- To prevent having double encoded quotes
     end
     v = gsub(v, [[\/]], [[/]]) -- To prevent having double encoded slashes
@@ -73,11 +77,11 @@ function _M.transform_json_body(conf, buffered_data)
       json_body[name] = v
     end
   end
-  
-  -- add new key:value to body    
+
+  -- add new key:value to body
   for _, name, value in iter(conf.add.json) do
     local v = cjson_encode(value)
-    if (sub(v, 1, 1) == [["]]) and (sub(v, -1, -1) == [["]]) then
+    if sub(v, 1, 1) == [["]] and sub(v, -1, -1) == [["]] then
       v = gsub(sub(v, 2, -2), [[\"]], [["]]) -- To prevent having double encoded quotes
     end
     v = gsub(v, [[\/]], [[/]]) -- To prevent having double encoded slashes
@@ -85,18 +89,18 @@ function _M.transform_json_body(conf, buffered_data)
       json_body[name] = v
     end
   end
-  
-  -- append new key:value or value to existing key    
+
+  -- append new key:value or value to existing key
   for _, name, value in iter(conf.append.json) do
     local v = cjson_encode(value)
-    if (sub(v, 1, 1) == [["]]) and (sub(v, -1, -1) == [["]]) then
+    if sub(v, 1, 1) == [["]] and sub(v, -1, -1) == [["]] then
       v = gsub(sub(v, 2, -2), [[\"]], [["]]) -- To prevent having double encoded quotes
     end
     v = gsub(v, [[\/]], [[/]]) -- To prevent having double encoded slashes
     json_body[name] = append_value(json_body[name],v)
   end
-  
-  return cjson_encode(json_body) 
+
+  return cjson_encode(json_body)
 end
 
 return _M
